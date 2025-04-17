@@ -1,0 +1,72 @@
+To address the issue with the quantity display for meat and seafood in the recipe list, which is affecting the shopping list as well, we need to ensure that the quantity is calculated correctly and converted to pounds when servings are updated.
+
+The key code where this logic is handled appears to be in the adjust_ingredient_quantity function and also in the parse_ingredient function. Let's ensure we are properly multiplying the base quantity (in grams) by the serving multiplier and converting it accurately to pounds.
+
+Here’s the updated code for the parse_ingredient function in utils/shopping_list.py:
+
+def parse_ingredient(ingredient: str, serving_multiplier: float = 1.0) -> Tuple[float, str, str, str]:
+    """
+    Parse an ingredient string into quantity, unit, descriptor, and item.
+    Returns (quantity, unit, descriptor, item)
+    """
+    # Pattern for ingredients with weight in parentheses
+    weight_pattern = r'.*?\(([\d.]+)\s*([a-zA-Z]+)\)\s*([^()]+)'
+    weight_match = re.match(weight_pattern, ingredient)
+    if weight_match:
+        qty = float(weight_match.group(1)) * serving_multiplier
+        unit = weight_match.group(2)
+        item = weight_match.group(3).strip()
+        return (qty, unit, "", item)
+    # If no parentheses weight found, try start of string (e.g., "500g chicken")
+    start_pattern = r'^([\d.]+)\s*([a-zA-Z]+)\s*(.+)'
+    start_match = re.match(start_pattern, ingredient)
+    if start_match:
+        qty = float(start_match.group(1)) * serving_multiplier
+        unit = start_match.group(2)
+        item = start_match.group(3).strip()
+        return (qty, unit, "", item)
+    # Pattern for regular quantities with possible descriptors
+    pattern = r'^([\d.\/]+)\s*([a-zA-Z]+)?\s*(large|small|medium|bunch|head|whole)?\s*(.+)$'
+    match = re.match(pattern, ingredient.lower())
+    if not match:
+        return (1.0, "", "", ingredient.strip())
+    qty_str, unit, descriptor, item = match.groups()
+    # Convert fractions to decimals
+    if '/' in qty_str:
+        num, denom = map(float, qty_str.split('/'))
+        quantity = (num / denom) * serving_multiplier
+    else:
+        quantity = float(qty_str) * serving_multiplier
+    return (
+        quantity,
+        unit.lower() if unit else "",
+        descriptor.lower() if descriptor else "",
+        item.strip()
+    )
+Additionally, ensure that the conversion in the convert_weight function is implemented properly to display the correct weight in pounds:
+
+def convert_weight(quantity: float, unit: str) -> str:
+    """
+    Convert between metric and US weight units.
+    Returns string with both units if applicable.
+    """
+    if unit.lower() in ['g', 'grams', 'gram']:
+        lbs = quantity * 0.00220462
+        if quantity >= 1000:
+            return f"{quantity/1000:.1f}kg ({lbs:.1f} lbs)"
+        elif lbs >= 1:
+            return f"{quantity:.0f}g ({lbs:.1f} lbs)"
+        else:
+            oz = quantity * 0.035274
+            return f"{quantity}g ({oz:.1f} oz)"
+    elif unit.lower() in ['oz', 'ounces', 'ounce']:
+        grams = quantity * 28.3495
+        if quantity >= 16:
+            return f"{grams/1000:.1f}kg ({quantity/16:.1f} lbs)"
+        else:
+            return f"{grams:.0f}g ({quantity:.1f} oz)"
+    elif unit.lower() in ['lb', 'lbs', 'pounds', 'pound']:
+        kg = quantity * 0.453592
+        return f"{kg*1000:.0f}g ({quantity:.1f} lbs)"
+    return f"{quantity:.1f} {unit}"
+By making these adjustments, the quantity for meat and seafood should now be displayed correctly in both the recipe list and the shopping list, reflecting the changes when the number of servings is updated.
