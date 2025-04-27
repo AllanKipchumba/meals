@@ -26,40 +26,9 @@ def init_database():
             protein_goal INTEGER,
             carbs_goal INTEGER,
             fat_goal INTEGER,
+            is_premium BOOLEAN DEFAULT FALSE,
+            meal_gen_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS subscription_plans (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(50) NOT NULL,
-            price_id VARCHAR(100) NOT NULL,
-            price_amount INTEGER NOT NULL,
-            interval VARCHAR(20) NOT NULL,
-            description TEXT,
-            features TEXT[],
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS subscriptions (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            plan_id INTEGER REFERENCES subscription_plans(id),
-            stripe_subscription_id VARCHAR(100) UNIQUE NOT NULL,
-            stripe_customer_id VARCHAR(100) NOT NULL,
-            status VARCHAR(20) NOT NULL,
-            current_period_start TIMESTAMP NOT NULL,
-            current_period_end TIMESTAMP NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS recipe_usage (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            recipe_count INTEGER DEFAULT 0,
-            last_reset_date DATE DEFAULT CURRENT_DATE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS recipes (
@@ -109,24 +78,46 @@ def init_database():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, recipe_id)
         );
-
-        CREATE TABLE IF NOT EXISTS user_meal_generations (
+        
+        CREATE TABLE IF NOT EXISTS payments (
             id SERIAL PRIMARY KEY,
             user_id INTEGER REFERENCES users(id),
-            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS user_subscriptions (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER REFERENCES users(id),
-            stripe_customer_id TEXT,
-            stripe_subscription_id TEXT,
-            subscription_status TEXT,
-            subscription_type TEXT,
-            starts_at TIMESTAMP,
-            ends_at TIMESTAMP,
+            amount DECIMAL(10, 2) NOT NULL,
+            currency VARCHAR(3) DEFAULT 'USD',
+            payment_method VARCHAR(50),
+            status VARCHAR(20) NOT NULL,
+            transaction_id VARCHAR(100),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+    """)
+    
+    # Check if columns exist, add them if they don't
+    cur.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'is_premium') THEN
+            ALTER TABLE users ADD COLUMN is_premium BOOLEAN DEFAULT FALSE;
+        END IF;
+        
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'meal_gen_count') THEN
+            ALTER TABLE users ADD COLUMN meal_gen_count INTEGER DEFAULT 0;
+        END IF;
+        
+        -- Remove premium_until column if exists (since premium is now permanent)
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'premium_until') THEN
+            ALTER TABLE users DROP COLUMN premium_until;
+        END IF;
+
+        -- Update payments table to remove subscription fields if they exist
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'payments' AND column_name = 'plan_name') THEN
+            ALTER TABLE payments DROP COLUMN plan_name;
+        END IF;
+        
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'payments' AND column_name = 'plan_duration_months') THEN
+            ALTER TABLE payments DROP COLUMN plan_duration_months;
+        END IF;
+    END
+    $$;
     """)
     
     cur.close()

@@ -1,6 +1,7 @@
 import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
+import time
 
 class Database:
     def __init__(self):
@@ -39,7 +40,7 @@ class Database:
     def get_user_by_email(self, email):
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT id, email, username, password_hash FROM users WHERE email = %s", (email,))
+                cur.execute("SELECT id, email, username FROM users WHERE email = %s", (email,))
                 return cur.fetchone()
         
     def create_recipe(self, user_id, name, ingredients, instructions, calories, protein, carbs, fat, tags, difficulty, dietary_info, cooking_time, prep_time, weekend_prep, servings):
@@ -186,44 +187,67 @@ class Database:
                     ON CONFLICT (user_id, recipe_id) DO UPDATE 
                     SET keep_recipe = EXCLUDED.keep_recipe
                 """, (user_id, recipe_id, keep_recipe))
-
-    def log_meal_generation(self, user_id):
+                
+    # Premium features
+    def increment_meal_gen_count(self, user_id):
+        """Increment the meal generation count for a user"""
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO user_meal_generations (user_id)
-                    VALUES (%s)
-                """, (user_id,))
-
-    def get_monthly_generations(self, user_id):
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT COUNT(*) FROM user_meal_generations
-                    WHERE user_id = %s
-                    AND generated_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP)
+                    UPDATE users
+                    SET meal_gen_count = meal_gen_count + 1
+                    WHERE id = %s
+                    RETURNING meal_gen_count
                 """, (user_id,))
                 return cur.fetchone()[0]
-
-    def get_user_subscription(self, user_id):
-        with self.get_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT * FROM user_subscriptions
-                    WHERE user_id = %s
-                    AND subscription_status = 'active'
-                    AND ends_at > CURRENT_TIMESTAMP
-                """, (user_id,))
-                return cur.fetchone()
-
-    def create_subscription(self, user_id, stripe_customer_id, stripe_subscription_id, 
-                           subscription_type, starts_at, ends_at):
+    
+    def get_meal_gen_count(self, user_id):
+        """Get the number of meal generations a user has done"""
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO user_subscriptions 
-                    (user_id, stripe_customer_id, stripe_subscription_id, 
-                     subscription_status, subscription_type, starts_at, ends_at)
-                    VALUES (%s, %s, %s, 'active', %s, %s, %s)
-                """, (user_id, stripe_customer_id, stripe_subscription_id, 
-                      subscription_type, starts_at, ends_at))
+                    SELECT meal_gen_count
+                    FROM users
+                    WHERE id = %s
+                """, (user_id,))
+                result = cur.fetchone()
+                return result[0] if result else 0
+    
+    def check_premium_status(self, user_id):
+        """Check if a user has premium status"""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT is_premium
+                    FROM users
+                    WHERE id = %s
+                """, (user_id,))
+                result = cur.fetchone()
+                
+                if not result:
+                    return False
+                    
+                is_premium = result[0]
+                return is_premium
+    
+    def set_premium_status(self, user_id):
+        """Set a user's premium status permanently (one-time purchase)"""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE users
+                    SET is_premium = TRUE
+                    WHERE id = %s
+                """, (user_id,))
+                
+    def record_payment(self, user_id, amount, currency, payment_method, status, transaction_id):
+        """Record a payment for premium purchase"""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO payments 
+                    (user_id, amount, currency, payment_method, status, transaction_id)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (user_id, amount, currency, payment_method, status, transaction_id))
+                return cur.fetchone()[0]

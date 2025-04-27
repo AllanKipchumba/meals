@@ -1,18 +1,115 @@
 import json
 import os
-from openai import OpenAI
+import google.generativeai as genai
 import streamlit as st
+from dotenv import load_dotenv
 
-# Initialize OpenAI client with error handling
-try:
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-    if not OPENAI_API_KEY:
-        raise ValueError("OpenAI API key not found in environment variables")
-    client = OpenAI(api_key=OPENAI_API_KEY)
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize Gemini API with flexible API key handling
+def get_gemini_client():
+    # Check if we already have a configured client in session state
+    if 'gemini_configured' in st.session_state and st.session_state.gemini_configured:
+        return True
+    
+    # Try to get API key from environment variables first
+    api_key = os.environ.get("GEMINI_API_KEY")
+    
+    # Check if we have an API key in session state (user provided)
+    if not api_key and 'api_key' in st.session_state and st.session_state.api_key:
+        api_key = st.session_state.api_key
+    
+    if not api_key:
+        # Silent error - don't show anything in UI
+        return False
+    
+    try:
+        # Configure the Gemini API with the key
+        genai.configure(api_key=api_key)
+        
+        # Test that the API is working by listing available models
+        try:
+            models = genai.list_models()
+            model_names = [model.name for model in models]
+            st.session_state.available_models = model_names
+            st.session_state.gemini_configured = True
+            return True
+        except Exception as e:
+            # Silent failure
+            return False
 except Exception as e:
-    st.error(f"Error initializing OpenAI client: {str(e)}")
-    client = None
+        # Silent failure
+        return False
 
+# Generate text using Gemini
+def generate_gemini_response(prompt, model="gemini-1.0-pro"):
+    if not get_gemini_client():
+        st.error("API key configuration issue. Check that your GEMINI_API_KEY is set in the .env file.")
+        return None
+    
+    # Try to use an available model if the requested one isn't available
+    if hasattr(st.session_state, 'available_models'):
+        available_models = st.session_state.available_models
+        if model not in available_models and available_models:
+            for possible_model in ["gemini-1.0-pro", "gemini-pro", "gemini-1.5-flash"]:
+                if any(m.endswith(possible_model) for m in available_models):
+                    model = next(m for m in available_models if m.endswith(possible_model))
+                    break
+    
+    try:
+        generation_config = {
+            "temperature": 0.7,
+            "top_p": 1,
+            "top_k": 1,
+            "max_output_tokens": 4096,
+        }
+        
+        # Show a spinner while generating content
+        with st.spinner(f"Generating meal plan..."):
+            model = genai.GenerativeModel(model_name=model, 
+                                        generation_config=generation_config)
+            
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            ]
+            
+            response = model.generate_content(
+                prompt,
+                safety_settings=safety_settings
+            )
+            
+            # Check if we have a valid response
+            if not hasattr(response, 'text') or not response.text:
+                st.error("Received an empty response from Gemini API")
+                if hasattr(response, 'prompt_feedback'):
+                    st.error(f"Prompt feedback: {response.prompt_feedback}")
+                return None
+            
+            # Debug: store the raw response but don't display
+            st.session_state.last_gemini_response = response.text
+            
+            # Find and extract the JSON part from the response
+            text = response.text.strip()
+            
+            # Look for JSON object between { and }
+            start_idx = text.find('{')
+            end_idx = text.rfind('}') + 1
+            
+            if start_idx >= 0 and end_idx > start_idx:
+                json_str = text[start_idx:end_idx]
+                # Store the extracted JSON string but don't display
+                st.session_state.extracted_json = json_str
+                return json_str
+            else:
+                st.error("Could not parse the recipe data")
+                return None
+    except Exception as e:
+        st.error(f"Error generating content: {str(e)}")
+        return None
 
 def generate_recipe_prompt(preferences, meal_count=1, previous_recipes=None):
     dietary_restrictions = ", ".join(preferences["dietary_restrictions"])
@@ -33,7 +130,7 @@ def generate_recipe_prompt(preferences, meal_count=1, previous_recipes=None):
 
     recipe_count = "a recipe" if meal_count == 1 else f"{meal_count} different recipes"
 
-    base_prompt = f"{meal_prompt} ({recipe_count}) {cuisine_prompt} based on these preferences:\n"
+    base_prompt = f"You are a professional chef and nutrition expert. I need you to {meal_prompt} ({recipe_count}) {cuisine_prompt} based on these preferences:\n"
     preferences_text = f"""- Dietary restrictions: {dietary_restrictions}
 - Maximum cooking time: {preferences["cooking_time"]} minutes
 - Cooking skill level: {preferences["skill_level"]}
@@ -64,7 +161,7 @@ IMPORTANT: Focus on ingredients and preparations that can be done in advance, su
 4. Portioning ingredients
 5. Par-cooking certain components
 
-You must respond with ONLY a valid JSON object in the following format, with no additional text:"""
+I need your response to be a valid, parsable JSON object ONLY, with no other text before or after. The JSON must follow this exact format:"""
 
     json_template = """
 {
@@ -94,16 +191,20 @@ You must respond with ONLY a valid JSON object in the following format, with no 
 
 def get_recipe_suggestion(preferences):
     prompt = generate_recipe_prompt(preferences)
+    
+    response_text = generate_gemini_response(prompt)
+    if not response_text:
+        return None
+    
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Using GPT-4o mini model
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        recipe_data = json.loads(response.choices[0].message.content)
+        recipe_data = json.loads(response_text)
         return recipe_data["recipes"][0]
     except Exception as e:
-        st.error(f"Error generating recipe: {str(e)}")
+        st.error(f"Error parsing recipe data: {str(e)}")
+        # Show the raw response for debugging
+        if 'last_gemini_response' in st.session_state:
+            with st.expander("Show raw API response"):
+                st.text(st.session_state.last_gemini_response)
         return None
 
 
@@ -122,28 +223,31 @@ def get_alternative_recipe(preferences, previous_recipe):
         prompt = "IMPORTANT: For this recipe generation, prioritize these user preferences over other restrictions: " + \
                 ", ".join(additional_prefs) + "\n\n" + prompt
     
+    response_text = generate_gemini_response(prompt)
+    if not response_text:
+        return None
+    
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Using GPT-4o mini model
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        recipe_data = json.loads(response.choices[0].message.content)
+        recipe_data = json.loads(response_text)
         return recipe_data["recipes"][0]
     except Exception as e:
-        st.error(f"Error generating alternative recipe: {str(e)}")
+        st.error(f"Error parsing alternative recipe data: {str(e)}")
+        # Show the raw response for debugging
+        if 'last_gemini_response' in st.session_state:
+            with st.expander("Show raw API response"):
+                st.text(st.session_state.last_gemini_response)
         return None
 
 
 def get_weekly_meal_plan(preferences, num_meals):
     prompt = generate_recipe_prompt(preferences, meal_count=num_meals)
+    
+    response_text = generate_gemini_response(prompt)
+    if not response_text:
+        return None
+    
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Using GPT-4o mini model
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        recipe_data = json.loads(response.choices[0].message.content)
+        recipe_data = json.loads(response_text)
         recipes = recipe_data["recipes"]
         # Ensure we get exactly the number of meals requested
         while len(recipes) < num_meals:
@@ -153,4 +257,11 @@ def get_weekly_meal_plan(preferences, num_meals):
         return recipes[:num_meals]
     except Exception as e:
         st.error(f"Error generating weekly meal plan: {str(e)}")
+        # Show the raw response for debugging
+        if 'last_gemini_response' in st.session_state:
+            with st.expander("Show raw API response"):
+                st.text(st.session_state.last_gemini_response)
+        if 'extracted_json' in st.session_state:
+            with st.expander("Show extracted JSON"):
+                st.text(st.session_state.extracted_json)
         return None

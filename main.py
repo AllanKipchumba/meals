@@ -1,71 +1,123 @@
-import os
-from dotenv import load_dotenv
-
-# Load environment variables before any imports that use them
-load_dotenv()
-
 import streamlit as st
+# Set page config at the very beginning before any other imports that might use Streamlit
+st.set_page_config(
+    page_title="Meal Planner",
+    initial_sidebar_state="collapsed"
+)
+
 from utils.recipe_generator import get_weekly_meal_plan
 from utils.shopping_list import generate_shopping_list
-from utils.views import display_all_recipes,display_all_weekend_prep,display_recipe,format_recipe_for_printing, display_favorite_recipes, display_subscription_page, display_user_plan_page
+from utils.views import display_all_recipes,display_all_weekend_prep,display_recipe,format_recipe_for_printing
+from utils.recipe_generator import get_gemini_client
 from utils.auth import login_user, handle_callback,check_authentication
+from utils.stripe_integration import initialize_stripe, create_checkout_session, verify_checkout_session
+from utils.stripe_webhook import handle_webhook
 from database.queries import Database
 from database.init_db import init_database
-# Removed import for non-existent/replaced functions: init_subscription_plans, handle_checkout_session
-
 import time
-from utils.subscription import handle_subscription_checkout
+import os
+import re
+import datetime
+from dotenv import load_dotenv
 
-# Add this constant before the show_subscription_status function
-FREE_MONTHLY_LIMIT = 4
+# Constants
+FREE_MEAL_GEN_LIMIT = 4
+PREMIUM_PRICE = 9.99
 
-# Add to main.py sidebar
-def show_subscription_status():
-    user_id = st.session_state['user']['id']
-    db = Database()
+def get_premium_badge():
+    """Returns HTML for a premium badge"""
+    return """
+    <span style="background-color: #FFD700; color: #000; padding: 2px 6px; 
+           border-radius: 4px; font-size: 0.7em; font-weight: bold; margin-left: 5px;">
+        PREMIUM
+    </span>
+    """
+
+def extract_numeric_value(value_str):
+    """Extract numeric value from a string that might contain units like 'g', 'mg', etc."""
+    if not value_str:
+        return 0
     
-    monthly_count = db.get_monthly_generations(user_id)
-    subscription = db.get_user_subscription(user_id)
-    
-    with st.sidebar:
-        # Add user info and logout button at the top
-        if 'user' in st.session_state:
-            st.write(f"👤 {st.session_state['user']['username']}")
-            if st.button("Logout", key="logout_button", type="secondary"):
-                from utils.auth import logout_user
-                logout_user()
+    # Handle string values
+    if isinstance(value_str, str):
+        # Remove all non-numeric characters except decimal points
+        # This handles cases like '40g', '30 grams', etc.
+        numeric_str = re.sub(r'[^\d.]', '', value_str)
         
-        # Existing subscription status code
-        if subscription:
-            st.success("Premium Member")
-            st.write("Generate Unlimited meal plans")
-        else:
-            st.info(f"Free Plan: {monthly_count}/{FREE_MONTHLY_LIMIT} generations this month")
-            if monthly_count >= FREE_MONTHLY_LIMIT:
-                if st.button("Upgrade to Premium"):
-                    handle_subscription_checkout()
+        if numeric_str:
+            try:
+                return float(numeric_str)
+            except ValueError:
+                return 0
+    
+    # Handle if it's already a number
+    try:
+        return float(value_str)
+    except (ValueError, TypeError):
+        return 0
 
 def main():
+    # Initialize API key from environment variables (handled by recipe_generator)
+    get_gemini_client()
+    
+    # Load environment variables if not already loaded
+    if 'STRIPE_TEST_SECRET_KEY' not in os.environ and os.path.exists('.env'):
+        load_dotenv()
+    
+    # Initialize Stripe (will fail gracefully if keys not available)
+    stripe_initialized = initialize_stripe()
+    
     # INITIALIZE DATABASE
     init_database()   
-    
-    # Add this near the top of your main function
-    from utils.subscription import check_subscription_status, check_generation_limits, show_upgrade_modal
-    check_subscription_status()
     
     if 'auth_checked' not in st.session_state:
         st.session_state['auth_checked'] = False
     
     # Process OAuth callback if present
-    if "state" in st.query_params:
-        st.set_page_config(
-            page_title="Authentication",
-            initial_sidebar_state="collapsed"
-        )
+    if st.query_params.get("state"):
         st.subheader("Authentication Callback")
         st.write("Processing your login...")
         handle_callback()
-        return    
+        return
+    
+    # Process Stripe checkout callback if present
+    session_id = st.query_params.get("session_id")
+    if session_id:
+        st.subheader("Processing Payment")
+        st.write("Verifying your payment...")
+        
+        success, user_id, transaction_details = verify_checkout_session(session_id)
+        
+        if success and user_id:
+            # Record the payment and set premium status
+            db = Database()
+            db.record_payment(
+                user_id=int(user_id),
+                amount=transaction_details['amount'],
+                currency=transaction_details['currency'],
+                payment_method=transaction_details['payment_method'],
+                status='completed',
+                transaction_id=transaction_details['transaction_id']
+            )
+            db.set_premium_status(int(user_id))
+            
+            # Update session state
+            st.session_state['is_premium'] = True
+            st.session_state['show_premium_upgrade'] = False
+            
+            st.success("🎉 Payment successful! You now have premium access with unlimited meal generations.")
+            time.sleep(2)  # Give user time to see the message
+            # Redirect to main page without query parameters
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.error("Payment verification failed. Please try again.")
+            # Add a button to return to the main page
+            if st.button("Return to Meal Planner"):
+                st.query_params.clear()
+                st.rerun()
+        
+        return
     
     center_spinner_css = """
         <style>
@@ -96,15 +148,23 @@ def main():
         </style>
     """
     st.markdown(center_spinner_css, unsafe_allow_html=True)
-
-    # Removed redundant status check block, as check_subscription_status handles this
     
     if 'auth_checked' not in st.session_state or not st.session_state['auth_checked']:
-        with st.spinner(""):
+        with st.spinner(""):            
             is_authenticated = check_authentication()
             st.session_state['auth_checked'] = True
             st.session_state['is_authenticated'] = is_authenticated
+            
+            # Also set premium status in session state for easy access
+            if is_authenticated and 'user' in st.session_state:
+                db = Database()
+                user_id = st.session_state['user'].get('id')
+                is_premium = db.check_premium_status(user_id)
+                st.session_state['is_premium'] = is_premium
+                st.session_state['meal_gen_count'] = db.get_meal_gen_count(user_id)
+
     else:
+        
         is_authenticated = check_authentication()
         st.session_state['is_authenticated'] = is_authenticated
     
@@ -112,6 +172,12 @@ def main():
     if not st.session_state['is_authenticated']:
         login_user()
     else:
+        # Check premium status
+        db = Database()
+        user_id = st.session_state['user'].get('id')
+        is_premium = db.check_premium_status(user_id)
+        meal_gen_count = db.get_meal_gen_count(user_id)
+        
         # Initialize session state variables
         if 'weekly_recipes' not in st.session_state:
             st.session_state.weekly_recipes = {}
@@ -129,13 +195,100 @@ def main():
             st.session_state.preferences = {}
         if 'past_recipes' not in st.session_state:
             st.session_state.past_recipes = []  # Initialize past recipes
-        if 'show_upgrade_modal' not in st.session_state:
-            st.session_state.show_upgrade_modal = False # Initialize flag for upgrade modal
+            
+        # Display premium status at the top
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if is_premium:
+                st.success("🌟 Premium Account 🌟")
+            else:
+                if meal_gen_count >= FREE_MEAL_GEN_LIMIT:
+                    st.warning(f"⚠️ You've used all {FREE_MEAL_GEN_LIMIT} meal generations. Upgrade to premium for unlimited generations!")
+                    upgrade_col1, upgrade_col2 = st.columns(2)
+                    with upgrade_col1:
+                        if st.button("💳 Upgrade to Premium ($9.99)", type="primary"):
+                            st.session_state.show_premium_upgrade = True
+                            st.rerun()
+                else:
+                    remaining = FREE_MEAL_GEN_LIMIT - meal_gen_count
+                    st.info(f"Free plan: {remaining} meal generations remaining")
+                    
+                    # Show a small upgrade button
+                    if st.button("Upgrade to Premium"):
+                        st.session_state.show_premium_upgrade = True
+                        st.rerun()
+        
+        # Show premium upgrade screen if requested
+        if st.session_state.get('show_premium_upgrade', False):
+            st.title("Upgrade to Premium")
+            
+            # Premium features section
+            st.markdown("""
+            ### Premium Benefits:
+            - **Unlimited** meal plan generations
+            - Priority support
+            - Advanced customization options
+            - Save favorite recipes
+            """)
+            
+            # Pricing section - simplified to show only one option
+            st.markdown(f"""
+            <div style="padding: 20px; background-color: #f8f9fa; border-radius: 10px; margin: 20px 0; border: 1px solid #ddd;">
+                <h3 style="margin-top: 0;">Premium Lifetime Access</h3>
+                <h2 style="color: #0066cc;">${PREMIUM_PRICE}</h2>
+                <p><strong>One-time payment, lifetime access</strong></p>
+                <ul>
+                    <li>Unlimited meal generations</li>
+                    <li>All premium features</li>
+                    <li>No recurring fees</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Simple upgrade button
+            if st.button("Upgrade Now", type="primary", key="upgrade_btn"):
+                # Check if Stripe is properly initialized
+                if not initialize_stripe():
+                    st.error("Payment system is not available at this time. Please try again later.")
+                else:
+                    # Create a Stripe checkout session
+                    try:
+                        user_id = st.session_state['user'].get('id')
+                        
+                        # Generate URLs for success and cancel redirects
+                        # Use the current URL as the base
+                        base_url = "http://localhost:8501"
+                        
+                        success_url = f"{base_url}"
+                        cancel_url = f"{base_url}?cancel=true"
+                        
+                        # Create the checkout session
+                        checkout = create_checkout_session(
+                            user_id=user_id,
+                            success_url=success_url,
+                            cancel_url=cancel_url,
+                            price_in_usd=PREMIUM_PRICE
+                        )
+                        
+                        if checkout and 'url' in checkout:
+                            # Redirect to Stripe checkout
+                            st.markdown(f'<meta http-equiv="refresh" content="0;URL={checkout["url"]}">', unsafe_allow_html=True)
+                            st.write("Redirecting to secure payment page...")
+                            st.info("If you are not redirected automatically, [click here]({})".format(checkout["url"]))
+                        else:
+                            st.error("Error creating checkout session. Please try again.")
+                    except Exception as e:
+                        st.error(f"Error processing upgrade: {str(e)}")
+            
+            if st.button("← Back to Meal Planner", key="back_btn"):
+                st.session_state.show_premium_upgrade = False
+                st.rerun()
+                
+            # Stop here and don't show the meal planner UI
+            return
 
         st.title("Personal Meal Planner")
         st.subheader("Tell us about your preferences")
-
-        show_subscription_status()
 
         with st.form("user_preferences"):
             # Number of meals per week
@@ -300,14 +453,15 @@ def main():
             submitted = st.form_submit_button("Generate Meal Plan")
 
             if submitted:
-                user_id = st.session_state['user']['id']
-
-                # Check generation limits
-                if not check_generation_limits(user_id):
-                    st.session_state.show_upgrade_modal = True # Set flag instead of calling directly
-                    st.rerun() # Rerun to show modal outside the form
-
-                # Continue with meal plan generation (will only run if limit not reached)
+                # Check if user has reached their limit
+                if not is_premium and meal_gen_count >= FREE_MEAL_GEN_LIMIT:
+                    st.error("You've reached your meal plan generation limit. Please upgrade to premium to continue.")
+                    if st.button("Upgrade to Premium", key="upgrade_after_limit"):
+                        st.session_state.show_premium_upgrade = True
+                        st.rerun()
+                    return
+                
+                # Store the preferences in session state for later use
                 dinner_preferences = {
                     "dietary_restrictions":
                     dietary_restrictions,
@@ -382,26 +536,39 @@ def main():
                     breakfast_recipes = get_weekly_meal_plan(
                         st.session_state['breakfast_preferences'], num_breakfasts)
                 
-                # After successful generation, log it
-                db = Database()
-                db.log_meal_generation(user_id)
-                
+               
                 if dinner_recipes or breakfast_recipes:
+                    # Record this meal generation
+                    db.increment_meal_gen_count(user_id)
+                    # Re-fetch the current count
+                    meal_gen_count = db.get_meal_gen_count(user_id)
+                    
+                    if not is_premium and meal_gen_count >= FREE_MEAL_GEN_LIMIT:
+                        st.warning("This was your last free meal generation. Upgrade to premium for unlimited generations!")
+                    
                     st.session_state['dinner_recipes'] = dinner_recipes
                     st.session_state['breakfast_recipes'] = breakfast_recipes
                     st.rerun()
 
-        # Check if we need to show the upgrade modal (outside the form)
-        if st.session_state.get('show_upgrade_modal', False):
-            show_upgrade_modal()
-            st.session_state.show_upgrade_modal = False # Reset the flag after showing
-
         # Display recipes based on whether it's a weekly plan or single recipe
-        elif 'dinner_recipes' in st.session_state or 'breakfast_recipes' in st.session_state: # Use elif to avoid showing recipes if modal is shown
+        if 'dinner_recipes' in st.session_state or 'breakfast_recipes' in st.session_state:
             tabs = st.tabs(["Your Weekly Meal Plan", "Past Recipes"])
             with tabs[0]:
                 st.header("Your Weekly Meal Plan")
-
+                
+                # Show premium export options for premium users
+                if st.session_state.get('is_premium', False):
+                    st.markdown("""
+                    <div style="background-color: #F0F8FF; padding: 10px; border-radius: 5px; border: 1px solid #ADD8E6;">
+                    <h4 style="margin-top: 0;">Premium Features</h4>
+                    <ul>
+                        <li>Export to PDF</li>
+                        <li>Share meal plan via email</li>
+                        <li>Save as template</li>
+                    </ul>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
                 # Display consolidated views or individual recipes
                 if st.session_state.get('show_weekend_prep', False):
                     if st.session_state.get('dinner_recipes'):
@@ -660,13 +827,18 @@ def main():
 
                 def show_past_recipes():
                     st.header("Past Recipes")
+                    
+                    # Add premium feature notes
+                    if not st.session_state.get('is_premium', False):
+                        st.info("Upgrade to premium to save unlimited favorite recipes!")
+                    
                     if 'user' not in st.session_state:
                         st.warning("Please log in to view your past recipes")
                         return
 
                     db = Database()
                     past_recipes = db.get_recipes(
-                        st.session_state['user']['id'])
+                        st.session_state['user']['id'])                   
                     if not past_recipes:
                         st.info(
                             "No past recipes found. Generate some meal plans to see your history!"
@@ -674,8 +846,12 @@ def main():
                         return
 
                     for recipe in past_recipes:
+                        recipe_title = recipe['name']
+                        if recipe.get('is_premium_recipe', False):
+                            recipe_title += " " + get_premium_badge()
+                        
                         with st.expander(
-                                f"{recipe['name']} (Made on: {recipe['created_at'].strftime('%Y-%m-%d')})"
+                                f"{recipe_title} (Made on: {recipe['created_at'].strftime('%Y-%m-%d')})"
                         ):
                             col1, col2 = st.columns([3, 1])
                             with col1:
@@ -710,7 +886,7 @@ def main():
                                             key=f"update_rating_{recipe['id']}"):
                                     db.add_rating(st.session_state['user']['id'],
                                                 recipe['id'], new_rating, None)
-
+                                    
                                     if(keep_recipe):
                                         db.add_favoureted_recipe(
                                             st.session_state['user']['id'],
@@ -720,78 +896,60 @@ def main():
                                             st.session_state['user']['id'],
                                             recipe['id'])
                                     st.success("Recipe preferences updated!")
-
-
+                                    
+                                    
                                     st.rerun()
 
                 show_past_recipes()
 
-            try:
+            try:                
                 db = Database()
+                
+                for i, recipe in enumerate(st.session_state['dinner_recipes'], 1):
+                    try:
+                        db.create_recipe(
+                            user_id=st.session_state['user'].get("id"),
+                            name=recipe['name'],
+                            ingredients=recipe['ingredients'],
+                            instructions=recipe['instructions'],
+                            calories=extract_numeric_value(recipe['calories']),
+                            protein=extract_numeric_value(recipe['macros']['protein']),
+                            carbs=extract_numeric_value(recipe['macros']['carbs']),
+                            fat=extract_numeric_value(recipe['macros']['total_fat']),
+                            tags=recipe.get('tags', []),
+                            difficulty=recipe['difficulty'],
+                            dietary_info=recipe['dietary_info'],
+                            cooking_time=extract_numeric_value(recipe['cooking_time']),
+                            prep_time=20,
+                            weekend_prep=recipe['weekend_prep'],
+                            servings=30,
+                        )
+                    except Exception as recipe_error:
+                        st.error(f"Error saving dinner recipe '{recipe['name']}': {str(recipe_error)}")
+                        continue
 
-                # Save dinner recipes if they exist
-                if st.session_state.get('dinner_recipes'):
-                    for recipe in st.session_state['dinner_recipes']:
-                        if not recipe or not isinstance(recipe, dict):
-                            continue
-
-                        try:
-                            # Parse calories value
-                            calories_str = recipe.get('calories', '0')
-                            if isinstance(calories_str, str):
-                                calories_str = calories_str.split()[0]  # Get the number part
-
-                            db.create_recipe(
-                                user_id=st.session_state['user'].get("id"),
-                                name=recipe.get('name', ''),
-                                ingredients=recipe.get('ingredients', []),
-                                instructions=recipe.get('instructions', []),
-                                calories=int(calories_str),
-                                protein=float(recipe.get('macros', {}).get('protein', '0').split()[0]),
-                                carbs=float(recipe.get('macros', {}).get('carbs', '0').split()[0]),
-                                fat=float(recipe.get('macros', {}).get('total_fat', '0').split()[0]),
-                                tags=recipe.get('tags', []),
-                                difficulty=recipe.get('difficulty', 'medium'),
-                                dietary_info=recipe.get('dietary_info', []),
-                                cooking_time=int(recipe.get('cooking_time', '0').split()[0]),
-                                prep_time=20,
-                                weekend_prep=recipe.get('weekend_prep', []),
-                                servings=recipe.get('servings', 4)
-                            )
-                        except Exception as e:
-                            st.error(f"Error saving dinner recipe {recipe.get('name', '')}: {str(e)}")
-
-                # Save breakfast recipes if they exist
-                if st.session_state.get('breakfast_recipes'):
-                    for recipe in st.session_state['breakfast_recipes']:
-                        if not recipe or not isinstance(recipe, dict):
-                            continue
-
-                        try:
-                            # Parse calories value
-                            calories_str = recipe.get('calories', '0')
-                            if isinstance(calories_str, str):
-                                calories_str = calories_str.split()[0]  # Get the number part
-
-                            db.create_recipe(
-                                user_id=st.session_state['user'].get("id"),
-                                name=recipe.get('name', ''),
-                                ingredients=recipe.get('ingredients', []),
-                                instructions=recipe.get('instructions', []),
-                                calories=int(calories_str),
-                                protein=float(recipe.get('macros', {}).get('protein', '0').split()[0]),
-                                carbs=float(recipe.get('macros', {}).get('carbs', '0').split()[0]),
-                                fat=float(recipe.get('macros', {}).get('total_fat', '0').split()[0]),
-                                tags=recipe.get('tags', []),
-                                difficulty=recipe.get('difficulty', 'medium'),
-                                dietary_info=recipe.get('dietary_info', []),
-                                cooking_time=int(recipe.get('cooking_time', '0').split()[0]),
-                                prep_time=30,
-                                weekend_prep=recipe.get('weekend_prep', []),
-                                servings=recipe.get('servings', 4)
-                            )
-                        except Exception as e:
-                            st.error(f"Error saving breakfast recipe {recipe.get('name', '')}: {str(e)}")
+                for i, recipe in enumerate(st.session_state['breakfast_recipes'], 1):
+                    try:
+                        db.create_recipe(
+                            user_id=st.session_state['user'].get("id"),
+                            name=recipe['name'],
+                            ingredients=recipe['ingredients'],
+                            instructions=recipe['instructions'],
+                            calories=extract_numeric_value(recipe['calories']),
+                            protein=extract_numeric_value(recipe['macros']['protein']),
+                            carbs=extract_numeric_value(recipe['macros']['carbs']),
+                            fat=extract_numeric_value(recipe['macros']['total_fat']),
+                            tags=recipe.get('tags', []),
+                            difficulty=recipe['difficulty'],
+                            dietary_info=recipe['dietary_info'],
+                            cooking_time=extract_numeric_value(recipe['cooking_time']),
+                            prep_time=30,
+                            weekend_prep=recipe['weekend_prep'],
+                            servings=30,
+                        )
+                    except Exception as recipe_error:
+                        st.error(f"Error saving breakfast recipe '{recipe['name']}': {str(recipe_error)}")
+                        continue
             except Exception as e:
                 st.error(f"Error saving recipes to database: {str(e)}")
         elif 'current_recipe' in st.session_state:
@@ -812,18 +970,7 @@ def main():
                     st.subheader("🛒 Your Shopping List")
                     for item in st.session_state.shopping_list:
                         st.write(f"• {item}")
-
-        # Sidebar navigation
-        st.sidebar.title("Navigation")
-        page = st.sidebar.radio("Go to", ["Home", "Subscription"])
-
-        if page == "Subscription":
-            # Removed call to non-existent init_subscription_plans()
-            user_id = st.session_state.get('user', {}).get('id')
-            display_user_plan_page(user_id)
-            display_subscription_page(user_id=user_id)
-
-
+       
 
 if __name__ == "__main__":
     main()
