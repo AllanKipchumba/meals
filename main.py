@@ -264,14 +264,12 @@ def main():
                         user_id = st.session_state['user'].get('id')
                         
                         # Generate URLs for success and cancel redirects
-                        # Use the current URL as the base, dynamically determined from the request
-                        base_url = st.experimental_get_query_params().get("base_url", [""])[0]
-                        if not base_url:
-                            # If no base_url provided, try to determine from environment variable
-                            base_url = os.environ.get("REDIRECT_URI", "https://meals-0b6b.onrender.com")
-                            # Remove trailing slash if present
-                            if base_url.endswith('/'):
-                                base_url = base_url[:-1]
+                        # Use the current URL as the base, determined from environment variable
+                        base_url = os.environ.get("REDIRECT_URI", "https://meals-0b6b.onrender.com")
+                        
+                        # Remove trailing slash if present
+                        if base_url.endswith('/'):
+                            base_url = base_url[:-1]
                         
                         success_url = f"{base_url}"
                         cancel_url = f"{base_url}?cancel=true"
