@@ -256,4 +256,3 @@ def get_weekly_meal_plan(preferences, num_meals):
             with st.expander("Show raw API response"):
                 st.text(st.session_state.last_gemini_response)
         return None 
-

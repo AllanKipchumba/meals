@@ -218,6 +218,14 @@ def main():
                         st.session_state.show_premium_upgrade = True
                         st.rerun()
         
+        with col3:
+            if st.button("Logout", key="logout_button"):
+                # Clear authentication state
+                st.session_state.clear()
+                st.session_state['auth_checked'] = False
+                st.session_state['is_authenticated'] = False
+                st.rerun()
+        
         # Show premium upgrade screen if requested
         if st.session_state.get('show_premium_upgrade', False):
             st.title("Upgrade to Premium")
@@ -257,7 +265,7 @@ def main():
                         
                         # Generate URLs for success and cancel redirects
                         # Use the current URL as the base
-                        base_url = "http://localhost:8501"
+                        base_url = "http://localhost:5000"
                         
                         success_url = f"{base_url}"
                         cancel_url = f"{base_url}?cancel=true"
@@ -456,9 +464,11 @@ def main():
                 # Check if user has reached their limit
                 if not is_premium and meal_gen_count >= FREE_MEAL_GEN_LIMIT:
                     st.error("You've reached your meal plan generation limit. Please upgrade to premium to continue.")
-                    if st.button("Upgrade to Premium", key="upgrade_after_limit"):
-                        st.session_state.show_premium_upgrade = True
-                        st.rerun()
+                    # Replace button with message
+                    st.info("Upgrade to our premium plan for unlimited meal generations!")
+                    # Set the premium upgrade flag to show the premium upgrade page on next rerun
+                    st.session_state.show_premium_upgrade = True
+                    st.rerun()
                     return
                 
                 # Store the preferences in session state for later use

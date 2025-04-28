@@ -29,7 +29,7 @@ def run_services():
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
-    print("Streamlit app started on port 8501.")
+    print("Streamlit app started on port 5000.")
     
     try:
         while True:
