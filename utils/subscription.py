@@ -61,8 +61,8 @@ def handle_subscription_checkout():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=f'{os.environ.get("REDIRECT_URI", "http://localhost:5000/")}?session_id={{CHECKOUT_SESSION_ID}}&subscription=success',
-            cancel_url=f'{os.environ.get("REDIRECT_URI", "http://localhost:5000/")}?subscription=cancelled',
+            success_url=f'{os.environ.get("REDIRECT_URI", "https://meals-0b6b.onrender.com/")}?session_id={{CHECKOUT_SESSION_ID}}&subscription=success',
+            cancel_url=f'{os.environ.get("REDIRECT_URI", "https://meals-0b6b.onrender.com/")}?subscription=cancelled',
             client_reference_id=str(user_id)
         )
         

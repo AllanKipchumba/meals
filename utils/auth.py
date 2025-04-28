@@ -13,8 +13,8 @@ from .helpers import create_auth_token
 # Load environment variables with fallbacks
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-# Use environment variable for Redirect URI, fallback to localhost for development
-REDIRECT_URI = os.environ.get("REDIRECT_URI", "http://localhost:5000/")
+# Use environment variable for Redirect URI, fallback to production URL
+REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://meals-0b6b.onrender.com/")
 AUTHORIZATION_BASE_URL = "https://accounts.google.com/o/oauth2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = [
