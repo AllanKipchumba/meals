@@ -9,7 +9,7 @@ from utils.recipe_generator import get_weekly_meal_plan
 from utils.shopping_list import generate_shopping_list
 from utils.views import display_all_recipes,display_all_weekend_prep,display_recipe,format_recipe_for_printing
 from utils.recipe_generator import get_gemini_client
-from utils.auth import login_user, handle_callback,check_authentication
+from utils.auth import login_user, handle_callback,check_authentication, logout_user
 from utils.stripe_integration import initialize_stripe, create_checkout_session, verify_checkout_session
 from utils.stripe_webhook import handle_webhook
 from database.queries import Database
@@ -220,11 +220,9 @@ def main():
         
         with col3:
             if st.button("Logout", key="logout_button"):
-                # Clear authentication state
-                st.session_state.clear()
-                st.session_state['auth_checked'] = False
-                st.session_state['is_authenticated'] = False
-                st.rerun()
+                # Import and call the logout_user function from auth.py
+                logout_user()
+                # No need to manually clear session state or rerun as logout_user() handles that
         
         # Show premium upgrade screen if requested
         if st.session_state.get('show_premium_upgrade', False):

@@ -410,10 +410,19 @@ def check_authentication():
     
     return False
 def logout_user():
-    for key in ['user', 'logged_in', 'user_info', 'token', 'oauth_state']:
-        if key in st.session_state:
-            del st.session_state[key]     
+    # Clear all authentication-related session state variables
+    auth_keys = ['user', 'logged_in', 'user_info', 'token', 'oauth_state', 
+                 'auth_checked', 'is_authenticated', 'is_premium', 'meal_gen_count']
     
-    cookie_manager.delete("auth_token")   
-   
+    for key in auth_keys:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # Clear the authentication cookie
+    cookie_manager.delete("auth_token")
+    
+    # Clear any other cookies that might be used for authentication
+    cookie_manager.delete("session_id")
+    
+    # Force a rerun to refresh the page
     st.rerun()
