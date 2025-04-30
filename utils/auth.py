@@ -418,11 +418,12 @@ def logout_user():
         if key in st.session_state:
             del st.session_state[key]
     
-    # Clear the authentication cookie
-    cookie_manager.delete("auth_token")
+    # Check if the auth_token cookie exists before trying to delete it
+    if cookie_manager.get("auth_token"):
+        cookie_manager.delete("auth_token", key="delete_auth_token")
     
-    # Clear any other cookies that might be used for authentication
-    cookie_manager.delete("session_id")
+    # No need to delete session_id as it's not being used
+    # The error occurs because this cookie doesn't exist
     
     # Force a rerun to refresh the page
     st.rerun()

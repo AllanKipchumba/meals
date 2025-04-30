@@ -40,7 +40,7 @@ class Database:
     def get_user_by_email(self, email):
         with self.get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT id, email, username FROM users WHERE email = %s", (email,))
+                cur.execute("SELECT id, email, username, password_hash FROM users WHERE email = %s", (email,))
                 return cur.fetchone()
         
     def create_recipe(self, user_id, name, ingredients, instructions, calories, protein, carbs, fat, tags, difficulty, dietary_info, cooking_time, prep_time, weekend_prep, servings):
